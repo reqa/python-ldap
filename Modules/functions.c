@@ -6,6 +6,7 @@
 #include "berval.h"
 #include "constants.h"
 #include "options.h"
+#include <stdio.h>
 
 /* ldap_initialize */
 
@@ -166,7 +167,8 @@ static PyObject *
 l_ldap_dn2str(PyObject *unused, PyObject *args)
 {
     struct berval str;
-    LDAPDN dn = malloc(sizeof(LDAPDN));
+    LDAPDN dn = NULL;
+    LDAPRDN rdn = NULL;
     int flags = 0;
     PyObject *result = NULL, *tmp, *dn_list;
     int res, i, j;
@@ -188,6 +190,9 @@ l_ldap_dn2str(PyObject *unused, PyObject *args)
         goto failed;
     }
 
+    Py_ssize_t nrdns = PyObject_Length(dn_list);
+    dn = malloc(sizeof(LDAPRDN *) * (nrdns+1));
+
     i = 0;
     while (1) {
         PyObject *inext = PyIter_Next(iter);
@@ -205,8 +210,10 @@ l_ldap_dn2str(PyObject *unused, PyObject *args)
 
         PyObject *iiter = PyObject_GetIter(inext);
 
+        Py_ssize_t navas = PyObject_Length(inext);
+        rdn = malloc(sizeof(LDAPRDN) * (navas+1));
+
         j = 0;
-        LDAPRDN rdn = malloc(sizeof(LDAPRDN));
         while (1) {
             PyObject *next = PyIter_Next(iiter);
             if (!next) {
@@ -216,46 +223,37 @@ l_ldap_dn2str(PyObject *unused, PyObject *args)
             if (PyList_Check(next)) {
                 next = PyList_AsTuple(next);
             }
-            if (!PyTuple_Check(next) || PyTuple_Size(next) < 3) {
+            if (!PyTuple_Check(next) || PyTuple_Size(next) != 3) {
                 PyErr_SetString(PyExc_TypeError, type_error_message);
                 goto failed;
             }
 
-            PyObject *type, *value, *encoding, *btype, *bvalue;
+            PyObject *name, *value, *encoding;
 
-            type = PyTuple_GetItem(next, 0);
+            name = PyTuple_GetItem(next, 0);
             value = PyTuple_GetItem(next, 1);
             encoding = PyTuple_GetItem(next, 2);
 
-            if (!PyUnicode_Check(type) || !PyUnicode_Check(value) || !PyLong_Check(encoding)) {
+            if (!PyUnicode_Check(name) || !PyUnicode_Check(value) || !PyLong_Check(encoding)) {
                 PyErr_SetString(PyExc_TypeError, type_error_message);
                 goto failed;
             }
 
-            btype = PyUnicode_AsEncodedString(type, "utf-8", "strict");
-            bvalue = PyUnicode_AsEncodedString(value, "utf-8", "strict");
-
-            struct berval attrType = {
-                .bv_val = PyBytes_AsString(btype),
-                .bv_len = (int)PyBytes_Size(btype),
-            };
-            struct berval attrValue = {
-                .bv_val = PyBytes_AsString(bvalue),
-                .bv_len = (int)PyBytes_Size(bvalue),
-            };
-
             LDAPAVA *ava = malloc(sizeof(LDAPAVA));
-            ava->la_attr = attrType;
-            ava->la_value = attrValue;
+
+            ava->la_attr.bv_val = (char *) PyUnicode_AsUTF8AndSize(name, (long int*) &ava->la_attr.bv_len);
+            ava->la_value.bv_val = (char *) PyUnicode_AsUTF8AndSize(value, (long int*) &ava->la_value.bv_len);
             ava->la_flags = (int)PyLong_AsLong(encoding);
 
             rdn[j] = ava;
             j++;
         }
+        rdn[j] = NULL;
 
         dn[i] = rdn;
         i++;
     }
+    dn[i] = NULL;
 
     res = ldap_dn2bv(dn, &str, flags);
     if (res != LDAP_SUCCESS)
